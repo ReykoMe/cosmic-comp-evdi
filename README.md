@@ -187,15 +187,26 @@ Manual alternative: `sudo pacman -S cosmic-comp` (accept removing `cosmic-comp-e
 
 ## Updating to a new COSMIC release
 
-Because `cosmic-comp-evdi` replaces `cosmic-comp`, `pacman -Syu` does **not** update the
-compositor when a new COSMIC release lands. Before (or right after) updating the rest of
-COSMIC:
+Nothing needs to be done until a new COSMIC version is released. Because
+`cosmic-comp-evdi` replaces `cosmic-comp`, `pacman -Syu` does **not** update the
+compositor when that happens — other COSMIC packages update, the compositor stays on
+the old version. To move it to the new version:
 
-1. Set `pkgver` in the [`PKGBUILD`](PKGBUILD) to the new version and refresh the source
-   checksum (`updpkgsums`, from `pacman-contrib`).
-2. Run `./install.sh`. `prepare()` fails if a patch no longer applies — in that case
-   rebase the patches onto the new `epoch-<version>` tag of cosmic-comp.
-3. Alternatively, run `./uninstall.sh` to go back to the stock compositor.
+1. Set `pkgver` in the [`PKGBUILD`](PKGBUILD) to the new COSMIC version (for example
+   `1.12.0`) and refresh the checksums:
+   ```sh
+   updpkgsums   # from the pacman-contrib package
+   ```
+2. Run `./install.sh`. While building, it applies the patches to the new cosmic-comp
+   sources and prints `Applying 0001-…` / `Applying 0002-…`.
+   - If the build finishes, the patches still fit: log out and back in.
+   - If it stops with `Hunk #… FAILED` right after an `Applying …` line, the cosmic-comp
+     code changed where a patch touches it. The patch has to be ported to the new
+     version (re-create the change on top of the new `epoch-<version>` tag of
+     cosmic-comp and export it with `git format-patch`), or wait for an updated release
+     of this repository.
+3. Until then, or if you no longer need the fix, run `./uninstall.sh` to return to the
+   stock compositor so that COSMIC can be updated normally.
 
 ## FAQ
 
