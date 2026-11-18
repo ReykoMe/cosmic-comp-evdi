@@ -12,6 +12,7 @@ pid=$(pgrep -x cosmic-comp | head -n1) || { echo "cosmic-comp is not running" >&
 hz=$(getconf CLK_TCK)
 
 exe=$(readlink "/proc/$pid/exe")
+exe=${exe% (deleted)}
 owner=$(pacman -Qoq "$exe" 2>/dev/null || echo "not owned by a package")
 echo "cosmic-comp pid $pid: $exe ($owner)"
 
@@ -28,9 +29,11 @@ done
 [ "$found" -eq 1 ] || echo -n " none"
 echo
 
-if journalctl -b --no-pager -o cat "_PID=$pid" 2>/dev/null | grep -q 'will use primary GPU for rendering'; then
+# Read the log once; `grep -q` on a pipe would SIGPIPE journalctl and fail under pipefail.
+log=$(journalctl -b --no-pager -o cat "_PID=$pid" 2>/dev/null || true)
+if grep -q 'will use primary GPU for rendering' <<<"$log"; then
     echo "Patch active: evdi outputs are rendered on the primary GPU"
-elif journalctl -b --no-pager -o cat "_PID=$pid" 2>/dev/null | grep -q 'Falling back to cpu-copy'; then
+elif grep -q 'Falling back to cpu-copy' <<<"$log"; then
     echo "Patch NOT active: compositor fell back to cpu-copy for evdi"
 else
     echo "Patch status unknown (no matching log lines for this compositor)"
