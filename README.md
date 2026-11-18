@@ -1,7 +1,7 @@
 # cosmic-comp-evdi — fix DisplayLink lag in the COSMIC desktop
 
 **Fixes laggy, stuttering DisplayLink monitors and high CPU usage of `cosmic-comp` on
-the COSMIC desktop (Pop!_OS COSMIC, Arch Linux, CachyOS) under Wayland.**
+the COSMIC desktop under Wayland. Packaged for and tested on Arch Linux and CachyOS.**
 
 Patched build of [cosmic-comp](https://github.com/pop-os/cosmic-comp), the COSMIC
 Wayland compositor, that renders **DisplayLink (evdi) monitors on the GPU** instead of
@@ -9,10 +9,11 @@ on the CPU via llvmpipe. On a 3440×1440 @ 100 Hz DisplayLink monitor it brings 
 compositor from **~7.6 CPU cores down to ~0.5** while moving windows, and removes the
 freeze of all monitors when the workspace overview is opened.
 
-It is packaged for Arch Linux and derivatives (CachyOS, EndeavourOS, Manjaro, …) as
-`cosmic-comp-evdi`, which replaces the stock `cosmic-comp` package. The patches
-themselves are plain `git format-patch` files and can be applied to any cosmic-comp
-build (e.g. on Pop!_OS, Fedora or NixOS).
+> [!IMPORTANT]
+> **Supported: Arch Linux and CachyOS, COSMIC on Wayland.** That is the only setup this
+> package has been tested on. It is distributed as the pacman package
+> `cosmic-comp-evdi`, which replaces the stock `cosmic-comp` package. Other
+> distributions are not supported by the install scripts.
 
 Tested with the Lenovo ThinkPad Hybrid USB-C with USB-A Dock. It should help with any
 DisplayLink dock or adapter (Lenovo, Dell D6000 / D3100, Targus, Plugable, …) that shows
@@ -97,7 +98,8 @@ Test system:
 
 ## Requirements
 
-- Arch Linux or a derivative with the COSMIC desktop installed from the repositories
+- Arch Linux or CachyOS with the COSMIC desktop (Wayland session) installed from the
+  repositories
 - `cosmic-comp` from the repositories at the **same version** as `pkgver` in the
   [`PKGBUILD`](PKGBUILD) (currently 1.11.0); mixing COSMIC component versions is not
   supported
