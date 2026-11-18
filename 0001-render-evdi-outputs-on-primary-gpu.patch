@@ -1,0 +1,279 @@
+From 7bd2366fa536c950b3574431c77ad5df4f89aefd Mon Sep 17 00:00:00 2001
+From: ReykoMe <ReykoMe@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 12:30:00 +0200
+Subject: [PATCH 1/2] kms: render evdi/DisplayLink outputs on the primary GPU
+
+evdi devices have no render engine, so their EGL display is backed by
+llvmpipe. Outputs on such devices were either composited entirely with
+llvmpipe or rendered on the primary GPU and then copied back through the
+CPU ("Falling back to cpu-copy"), because importing the primary GPU's
+tiled/CCS buffers into the evdi device fails. On a 3440x1440@100 Hz
+DisplayLink monitor this costs several CPU cores while windows move.
+
+After initialize_output(), replace the swapchain allocator of software
+targets with a GBM allocator on the primary GPU using the linear
+modifier, and render those outputs with a single renderer on the primary
+GPU. The framebuffer exporter imports the linear dmabuf into evdi, so
+no llvmpipe composition or CPU copy is involved.
+
+Based on the approach proposed in pop-os/cosmic-comp#2109.
+---
+ src/backend/kms/device.rs      |  2 ++
+ src/backend/kms/mod.rs         | 54 +++++++++++++++++++++++++++++--
+ src/backend/kms/surface/mod.rs | 58 ++++++++++++++++++++++++++--------
+ 3 files changed, 98 insertions(+), 16 deletions(-)
+
+diff --git a/src/backend/kms/device.rs b/src/backend/kms/device.rs
+index c58450bc..e4d6d314 100644
+--- a/src/backend/kms/device.rs
++++ b/src/backend/kms/device.rs
+@@ -515,6 +515,7 @@ impl State {
+                                     backend.primary_node.clone(),
+                                     new_device.inner.dev_node,
+                                     new_device.inner.render_node,
++                                    new_device.inner.is_software,
+                                     &self.common.event_loop_handle,
+                                     self.common.config.dynamic_conf.screen_filter().clone(),
+                                     self.common.shell.clone(),
+@@ -1066,6 +1067,7 @@ impl InnerDevice {
+                     primary_node,
+                     self.dev_node,
+                     self.render_node,
++                    self.is_software,
+                     evlh,
+                     screen_filter,
+                     shell,
+diff --git a/src/backend/kms/mod.rs b/src/backend/kms/mod.rs
+index 4dcffc75..3374d658 100644
+--- a/src/backend/kms/mod.rs
++++ b/src/backend/kms/mod.rs
+@@ -18,7 +18,12 @@ use indexmap::IndexMap;
+ use render::gles::GbmGlowBackend;
+ use smithay::{
+     backend::{
+-        allocator::{Buffer, dmabuf::Dmabuf, format::FormatSet},
++        allocator::{
++            Buffer, Modifier,
++            dmabuf::Dmabuf,
++            format::FormatSet,
++            gbm::{GbmAllocator, GbmBufferFlags},
++        },
+         drm::{DrmDeviceFd, DrmNode, NodeType, VrrSupport, output::DrmOutputRenderElements},
+         egl::{EGLContext, EGLDevice, EGLDisplay},
+         input::InputEvent,
+@@ -55,7 +60,10 @@ use tracing::{debug, error, info, warn};
+ use std::{
+     collections::{HashMap, HashSet},
+     path::Path,
+-    sync::{Arc, RwLock, atomic::AtomicBool},
++    sync::{
++        Arc, RwLock,
++        atomic::{AtomicBool, Ordering},
++    },
+     time::Duration,
+ };
+ 
+@@ -899,6 +907,17 @@ impl KmsGuard<'_> {
+             return Ok(());
+         }
+ 
++        // Extract primary GPU's GBM device so we can replace the swapchain allocator
++        // on software targets (EVDI/DisplayLink) after initialize_output().
++        let primary_gbm = {
++            let primary_node = self.primary_node.read().unwrap();
++            primary_node.and_then(|pn| {
++                self.drm_devices.values().find_map(|d| {
++                    (d.inner.render_node == pn && !d.inner.is_software).then(|| d.inner.gbm.clone())
++                })
++            })
++        };
++
+         for device in self.drm_devices.values_mut() {
+             // we only want outputs exposed to wayland - not leased ones
+             // but that is also not all surface, because that doesn't contain all detected, but unmapped outputs
+@@ -1129,6 +1148,37 @@ impl KmsGuard<'_> {
+                             compositor
+                         };
+ 
++                        // For software targets (evdi/DisplayLink), allocate the swapchain on
++                        // the primary GPU with a linear modifier. Rendering then stays on the
++                        // primary GPU and the framebuffer exporter imports the dmabuf into evdi.
++                        if device.inner.is_software
++                            && let Some(primary_gbm) = primary_gbm.as_ref()
++                        {
++                            let mut comp = drm.compositors().get(crtc).unwrap().lock().unwrap();
++                            let current_format = comp.format();
++                            match comp.set_format(
++                                GbmAllocator::new(
++                                    primary_gbm.clone(),
++                                    GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
++                                ),
++                                current_format,
++                                [Modifier::Linear],
++                            ) {
++                                Ok(()) => {
++                                    surface.swapchain_on_primary.store(true, Ordering::Release);
++                                    info!(
++                                        "Software target {}: swapchain moved to primary GPU (linear)",
++                                        surface.output.name(),
++                                    );
++                                }
++                                Err(err) => warn!(
++                                    "Failed to set primary GPU allocator for {}: {:?}",
++                                    surface.output.name(),
++                                    err,
++                                ),
++                            }
++                        }
++
+                         if let Some(bpc) = output_config.0.max_bpc
+                             && let Err(err) = drm_helpers::set_max_bpc(drm.device(), conn, bpc)
+                         {
+diff --git a/src/backend/kms/surface/mod.rs b/src/backend/kms/surface/mod.rs
+index cbc89381..2627d3eb 100644
+--- a/src/backend/kms/surface/mod.rs
++++ b/src/backend/kms/surface/mod.rs
+@@ -116,6 +116,7 @@ pub struct Surface {
+     known_nodes: HashSet<DrmNode>,
+ 
+     active: Arc<AtomicBool>,
++    pub(super) swapchain_on_primary: Arc<AtomicBool>,
+     pub feedback: HashMap<DrmNode, SurfaceDmabufFeedback>,
+     pub(super) primary_plane_formats: FormatSet,
+     overlay_plane_formats: Option<FormatSet>,
+@@ -133,6 +134,8 @@ pub struct SurfaceThreadState {
+     api: GpuManager<GbmGlowBackend<DrmDeviceFd>>,
+     primary_node: Arc<RwLock<Option<DrmNode>>>,
+     target_node: DrmNode,
++    target_is_software: bool,
++    swapchain_on_primary: Arc<AtomicBool>,
+     active: Arc<AtomicBool>,
+     vrr_mode: AdaptiveSync,
+     frame_flags: FrameFlags,
+@@ -245,6 +248,7 @@ impl Surface {
+         primary_node: Arc<RwLock<Option<DrmNode>>>,
+         dev_node: DrmNode,
+         target_node: DrmNode,
++        is_software: bool,
+         evlh: &LoopHandle<'static, State>,
+         screen_filter: ScreenFilter,
+         shell: Arc<parking_lot::RwLock<Shell>>,
+@@ -253,8 +257,10 @@ impl Surface {
+         let (tx, rx) = channel::<ThreadCommand>();
+         let (tx2, rx2) = channel::<SurfaceCommand>();
+         let active = Arc::new(AtomicBool::new(false));
++        let swapchain_on_primary = Arc::new(AtomicBool::new(false));
+ 
+         let active_clone = active.clone();
++        let swapchain_on_primary_clone = swapchain_on_primary.clone();
+         let output_clone = output.clone();
+ 
+         let thread = std::thread::Builder::new()
+@@ -264,6 +270,8 @@ impl Surface {
+                     output_clone,
+                     primary_node,
+                     target_node,
++                    is_software,
++                    swapchain_on_primary_clone,
+                     shell,
+                     active_clone,
+                     screen_filter,
+@@ -339,6 +347,7 @@ impl Surface {
+             output: output.clone(),
+             known_nodes: HashSet::new(),
+             active,
++            swapchain_on_primary,
+             feedback: HashMap::new(),
+             primary_plane_formats: FormatSet::default(),
+             overlay_plane_formats: None,
+@@ -493,6 +502,8 @@ fn surface_thread(
+     output: Output,
+     primary_node: Arc<RwLock<Option<DrmNode>>>,
+     target_node: DrmNode,
++    is_software: bool,
++    swapchain_on_primary: Arc<AtomicBool>,
+     shell: Arc<parking_lot::RwLock<Shell>>,
+     active: Arc<AtomicBool>,
+     screen_filter: ScreenFilter,
+@@ -520,6 +531,10 @@ fn surface_thread(
+         state
+     };
+ 
++    if is_software {
++        warn!("Software target {name}: will use primary GPU for rendering");
++    }
++
+     let vblank_frame_name = tracy_client::FrameName::new_leak(format!("vblank on {name}"));
+     let time_since_presentation_plot_name =
+         tracy_client::PlotName::new_leak(format!("{name} time since presentation, ms"));
+@@ -532,6 +547,8 @@ fn surface_thread(
+         api,
+         primary_node,
+         target_node,
++        target_is_software: is_software,
++        swapchain_on_primary,
+         active,
+         compositor: None,
+         frame_flags: FrameFlags::DEFAULT,
+@@ -995,26 +1012,39 @@ impl SurfaceThreadState {
+             return Ok(());
+         };
+ 
+-        let render_node = render_node_for_output(
+-            self.mirroring.as_ref().unwrap_or(&self.output),
+-            self.primary_node
+-                .read()
+-                .unwrap()
+-                .as_ref()
+-                .unwrap_or(&self.target_node),
+-            &self.target_node,
+-            &self.shell.read(),
+-        );
++        // For software targets (evdi/DisplayLink) whose swapchain was moved to the
++        // primary GPU, render there directly to avoid llvmpipe and the cross-device copy.
++        let use_primary =
++            self.target_is_software && self.swapchain_on_primary.load(Ordering::Relaxed);
++        let primary = *self
++            .primary_node
++            .read()
++            .unwrap()
++            .as_ref()
++            .unwrap_or(&self.target_node);
++        let (render_node, effective_target) = if use_primary {
++            (primary, primary)
++        } else {
++            (
++                render_node_for_output(
++                    self.mirroring.as_ref().unwrap_or(&self.output),
++                    &primary,
++                    &self.target_node,
++                    &self.shell.read(),
++                ),
++                self.target_node,
++            )
++        };
+ 
+         // Acquiring a renderer can fail transiently when the underlying DRM
+         // device is lost (e.g. after a GPU reset).
+-        let mut renderer = if render_node != self.target_node {
++        let mut renderer = if render_node != effective_target {
+             self.api
+-                .renderer(&render_node, &self.target_node, compositor.format())
++                .renderer(&render_node, &effective_target, compositor.format())
+                 .map_err(|err| anyhow::format_err!("Failed to create renderer: {:?}", err))?
+         } else {
+             self.api
+-                .single_renderer(&self.target_node)
++                .single_renderer(&effective_target)
+                 .map_err(|err| anyhow::format_err!("Failed to create renderer: {:?}", err))?
+         };
+ 
+@@ -1273,7 +1303,7 @@ impl SurfaceThreadState {
+ 
+             renderer = self
+                 .api
+-                .single_renderer(&self.target_node)
++                .single_renderer(&effective_target)
+                 .map_err(|err| anyhow::format_err!("Failed to create renderer: {:?}", err))?;
+ 
+             elements = postprocess_elements(

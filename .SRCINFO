@@ -1,0 +1,35 @@
+pkgbase = cosmic-comp-evdi
+	pkgdesc = COSMIC compositor patched to render DisplayLink (evdi) outputs on the GPU instead of llvmpipe
+	pkgver = 1.11.0
+	pkgrel = 1
+	epoch = 1
+	url = https://github.com/ReykoMe/cosmic-comp-evdi
+	arch = x86_64
+	groups = cosmic
+	license = GPL-3.0-only
+	makedepends = cargo
+	makedepends = git
+	makedepends = just
+	makedepends = lld
+	depends = fontconfig
+	depends = libgcc
+	depends = glibc
+	depends = libdisplay-info
+	depends = libseat.so
+	depends = libinput
+	depends = libxcb
+	depends = libxkbcommon
+	depends = mesa
+	depends = pixman
+	depends = systemd-libs
+	depends = wayland
+	provides = cosmic-comp=1:1.11.0
+	conflicts = cosmic-comp
+	source = git+https://github.com/pop-os/cosmic-comp.git#tag=epoch-1.11.0
+	source = 0001-render-evdi-outputs-on-primary-gpu.patch
+	source = 0002-offscreen-capture-on-primary-gpu.patch
+	b2sums = 4f6e0dbb8e7028ae8a47765ebd8ab198f87bacfe6d15e5856be51142f46aabddcb29b9f2dbf99acaf9b74fd45f6611330c19f7d29013719fecdf746c9e14ace2
+	b2sums = d6d2645a77b25f6cb8c4baa1d155f3a25c4235888ffbf354e155ac7a65a7878345af885a7b9f0977e12b0a8846a4827de67fde2c5dd0e90418771811fdb5247c
+	b2sums = c66068a79c3484197d867c68cc9be93c51bade2fb91f0a56a6980fcf83950c2c4d89f409ec42b648c547ba716a3405948697784f7c0aa4bae61ad03278caca75
+
+pkgname = cosmic-comp-evdi

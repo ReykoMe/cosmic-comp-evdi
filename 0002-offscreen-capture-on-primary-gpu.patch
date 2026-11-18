@@ -1,0 +1,33 @@
+From a5749950ee2d3256622f1603f2a5121a1be34b6b Mon Sep 17 00:00:00 2001
+From: ReykoMe <ReykoMe@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 12:30:00 +0200
+Subject: [PATCH 2/2] image-copy-capture: use the primary GPU for evdi outputs
+
+target_node_for_output() returned the evdi node for DisplayLink outputs,
+so workspace previews (overview) and screencopy of those outputs were
+rendered with llvmpipe on the main thread. This stalled the compositor
+and froze all monitors while the workspace overview was open.
+
+Skip software devices so offscreen rendering falls back to the primary
+GPU.
+---
+ src/backend/kms/mod.rs | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/backend/kms/mod.rs b/src/backend/kms/mod.rs
+index 3374d658..a3f8f897 100644
+--- a/src/backend/kms/mod.rs
++++ b/src/backend/kms/mod.rs
+@@ -735,8 +735,12 @@ impl KmsState {
+     }
+ 
+     pub fn target_node_for_output(&self, output: &Output) -> Option<DrmNode> {
++        // Software devices (evdi/DisplayLink) only have an llvmpipe renderer.
++        // Returning None lets offscreen work (screencopy, workspace previews)
++        // fall back to the primary GPU instead of rendering on the CPU.
+         self.drm_devices
+             .values()
++            .filter(|dev| !dev.inner.is_software)
+             .find(|dev| dev.inner.surfaces.values().any(|s| s.output == *output))
+             .map(|dev| &dev.inner.render_node)
+             .copied()
